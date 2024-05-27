@@ -4,104 +4,62 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
-from torch import Tensor
+from torch import BoolTensor, FloatTensor, LongTensor, Tensor, isin, stack, tensor
 
-from oml.losses.triplet import get_tri_ids_in_plain
 from oml.utils.misc import check_if_nonempty_positive_integers, clip_max
-from oml.utils.misc_torch import PCA, elementwise_dist, pairwise_dist, take_2d
+from oml.utils.misc_torch import PCA, pairwise_dist
 
 TMetricsDict = Dict[str, Dict[Union[int, float], Union[float, Tensor]]]
 
 
 def calc_retrieval_metrics(
-    distances: Tensor,
-    mask_gt: Tensor,
-    mask_to_ignore: Optional[Tensor] = None,
+    retrieved_ids: LongTensor,
+    gt_ids: List[LongTensor],
     cmc_top_k: Tuple[int, ...] = (5,),
     precision_top_k: Tuple[int, ...] = (5,),
     map_top_k: Tuple[int, ...] = (5,),
-    fmr_vals: Tuple[int, ...] = (1,),
     reduce: bool = True,
 ) -> TMetricsDict:
     """
     Function to count different retrieval metrics.
 
     Args:
-        distances: Distance matrix with the shape of ``[query_size, gallery_size]``
-        mask_gt: ``(i,j)`` element indicates if for ``i``-th query ``j``-th gallery is the correct prediction
-        mask_to_ignore: Binary matrix to indicate that some elements in the gallery cannot be used
-                     as answers and must be ignored
+        retrieved_ids: Top N gallery ids retrieved for every query with the shape of ``[n_query, top_n]``.
+            Every element is within the range ``(0, n_gallery - 1)``.
+        gt_ids: Gallery ids relevant to every query, list of ``n_query`` elements where every element may
+            have an arbitrary length. Every element is within the range ``(0, n_gallery - 1)``
         cmc_top_k: Values of ``k`` to calculate ``cmc@k`` (`Cumulative Matching Characteristic`)
         precision_top_k: Values of ``k`` to calculate ``precision@k``
         map_top_k: Values of ``k`` to calculate ``map@k`` (`Mean Average Precision`)
-        fmr_vals: Values of ``fmr`` (measured in quantiles) to calculate ``fnmr@fmr`` (`False Non Match Rate
-                  at the given False Match Rate`).
-                  For example, if ``fmr_values`` is (0.2, 0.4) we will calculate ``fnmr@fmr=0.2`` and ``fnmr@fmr=0.4``
         reduce: If ``False`` return metrics for each query without averaging
 
     Returns:
         Metrics dictionary.
 
     """
-    top_k_args = [cmc_top_k, precision_top_k, map_top_k]
+    # todo 522: clipping
 
-    if not any(top_k_args + [fmr_vals]):
-        raise ValueError("You must specify arguments for at leas 1 metric to calculate it")
+    assert retrieved_ids.ndim == 2, "Retrieved ids must be a tensor with the shape of [n_query, top_n]."
+    assert len(retrieved_ids) == len(gt_ids), "Numbers of queries have be the same."
+    n_queries = len(retrieved_ids)
 
-    if distances.shape != mask_gt.shape:
-        raise ValueError(
-            f"Distances matrix has the shape of {distances.shape}, "
-            f"but mask_to_ignore has the shape of {mask_gt.shape}."
-        )
-
-    if (mask_to_ignore is not None) and (mask_to_ignore.shape != distances.shape):
-        raise ValueError(
-            f"Distances matrix has the shape of {distances.shape}, "
-            f"but mask_to_ignore has the shape of {mask_to_ignore.shape}."
-        )
-
-    query_sz, gallery_sz = distances.shape
-
-    for top_k_arg in top_k_args:
-        for k in top_k_arg:
-            if k > gallery_sz:
-                warnings.warn(
-                    f"Your desired k={k} more than gallery_size={gallery_sz}. "
-                    f"We'll calculate metrics with k limited by the gallery size."
-                )
-
-    if mask_to_ignore is not None:
-        distances, mask_gt = apply_mask_to_ignore(distances=distances, mask_gt=mask_gt, mask_to_ignore=mask_to_ignore)
-
-    cmc_top_k_clipped = clip_max(cmc_top_k, gallery_sz)
-    precision_top_k_clipped = clip_max(precision_top_k, gallery_sz)
-    map_top_k_clipped = clip_max(map_top_k, gallery_sz)
-
-    max_k = max([*cmc_top_k, *precision_top_k, *map_top_k])
-    max_k = min(max_k, gallery_sz)
-
-    _, ii_top_k = torch.topk(distances, k=max_k, largest=False)
-    gt_tops = take_2d(mask_gt, ii_top_k)
-    n_gt = mask_gt.sum(dim=1)
+    # let's mark every correctly retrieved item as True and vice versa
+    gt_tops = stack([isin(retrieved_ids[i], gt_ids[i]) for i in range(n_queries)]).bool()
+    n_gts = tensor([len(ids) for ids in gt_ids]).long()
 
     metrics: TMetricsDict = defaultdict(dict)
 
     if cmc_top_k:
-        cmc = calc_cmc(gt_tops, cmc_top_k_clipped)
+        cmc = calc_cmc(gt_tops, cmc_top_k)
         metrics["cmc"] = dict(zip(cmc_top_k, cmc))
 
     if precision_top_k:
-        precision = calc_precision(gt_tops, n_gt, precision_top_k_clipped)
+        precision = calc_precision(gt_tops, n_gts, precision_top_k)
         metrics["precision"] = dict(zip(precision_top_k, precision))
 
     if map_top_k:
-        map = calc_map(gt_tops, n_gt, map_top_k_clipped)
+        map = calc_map(gt_tops, n_gts, map_top_k)
         metrics["map"] = dict(zip(map_top_k, map))
-
-    if fmr_vals:
-        pos_dist, neg_dist = extract_pos_neg_dists(distances, mask_gt, mask_to_ignore)
-        fnmr_at_fmr = calc_fnmr_at_fmr(pos_dist, neg_dist, fmr_vals)
-        metrics["fnmr@fmr"] = dict(zip(fmr_vals, fnmr_at_fmr))
 
     if reduce:
         metrics = reduce_metrics(metrics)
@@ -109,15 +67,45 @@ def calc_retrieval_metrics(
     return metrics
 
 
-def calc_topological_metrics(embeddings: Tensor, pfc_variance: Tuple[float, ...]) -> TMetricsDict:
+def calc_retrieval_metrics_on_full(
+    distances: Tensor,
+    mask_gt: Tensor,
+    mask_to_ignore: Optional[Tensor] = None,
+    cmc_top_k: Tuple[int, ...] = (5,),
+    precision_top_k: Tuple[int, ...] = (5,),
+    map_top_k: Tuple[int, ...] = (5,),
+    reduce: bool = True,
+) -> TMetricsDict:
+    # todo 522: get rid of this tmp function or at least move to the tests
+    if mask_to_ignore is not None:
+        distances, mask_gt = apply_mask_to_ignore(distances=distances, mask_gt=mask_gt, mask_to_ignore=mask_to_ignore)
+
+    max_k_arg = max([*cmc_top_k, *precision_top_k, *map_top_k])
+    k = min(distances.shape[1], max_k_arg)
+    _, retrieved_ids = torch.topk(distances, largest=False, k=k)
+
+    gt_ids = [LongTensor(row.nonzero()).view(-1) for row in mask_gt]
+
+    metrics = calc_retrieval_metrics(
+        cmc_top_k=cmc_top_k,
+        precision_top_k=precision_top_k,
+        map_top_k=map_top_k,
+        reduce=reduce,
+        gt_ids=gt_ids,
+        retrieved_ids=retrieved_ids,
+    )
+    return metrics
+
+
+def calc_topological_metrics(embeddings: Tensor, pcf_variance: Tuple[float, ...]) -> TMetricsDict:
     """
     Function to evaluate different topological metrics.
 
     Args:
         embeddings: Embeddings matrix with the shape of ``[n_embeddings, embeddings_dim]``.
-        pfc_variance: Values in range [0, 1]. Find the number of components such that the amount
+        pcf_variance: Values in range [0, 1]. Find the number of components such that the amount
                       of variance that needs to be explained is greater than the percentage specified
-                      by ``pfc_variance``.
+                      by ``pcf_variance``.
 
     Returns:
         Metrics dictionary.
@@ -125,9 +113,9 @@ def calc_topological_metrics(embeddings: Tensor, pfc_variance: Tuple[float, ...]
     """
     metrics: TMetricsDict = dict()
 
-    if pfc_variance:
-        main_components = calc_pcf(embeddings, pfc_variance)
-        metrics["pcf"] = dict(zip(pfc_variance, main_components))
+    if pcf_variance:
+        main_components = calc_pcf(embeddings, pcf_variance)
+        metrics["pcf"] = dict(zip(pcf_variance, main_components))
 
     return metrics
 
@@ -142,6 +130,20 @@ def reduce_metrics(metrics_to_reduce: TMetricsDict) -> TMetricsDict:
             output[k] = v
         else:
             output[k] = reduce_metrics(v)  # type: ignore
+
+    return output
+
+
+def take_unreduced_metrics_by_mask(metrics: TMetricsDict, mask: BoolTensor) -> TMetricsDict:
+    output: TMetricsDict = {}
+
+    for k, v in metrics.items():
+        if isinstance(v, Tensor):
+            output[k] = v[mask] if v.numel() > 1 else v
+        elif isinstance(v, (float, int)):
+            output[k] = v
+        else:
+            output[k] = take_unreduced_metrics_by_mask(v, mask)  # type: ignore
 
     return output
 
@@ -165,7 +167,9 @@ def calc_gt_mask(labels: Tensor, is_query: Tensor, is_gallery: Tensor) -> Tensor
     return gt_mask
 
 
-def calc_mask_to_ignore(is_query: Tensor, is_gallery: Tensor, sequence_ids: Optional[Tensor] = None) -> Tensor:
+def calc_mask_to_ignore(
+    is_query: Tensor, is_gallery: Tensor, sequence_ids: Optional[Union[Tensor, np.ndarray]] = None
+) -> Tensor:
     assert is_query.ndim == is_gallery.ndim == 1
     assert len(is_query) == len(is_gallery)
 
@@ -182,7 +186,8 @@ def calc_mask_to_ignore(is_query: Tensor, is_gallery: Tensor, sequence_ids: Opti
     if sequence_ids is not None:
         # this mask ignores gallery samples taken from the same sequence as a given query
         mask_to_ignore_seq = sequence_ids[is_query][..., None] == sequence_ids[is_gallery][None, ...]
-        mask_to_ignore = torch.logical_or(mask_to_ignore, mask_to_ignore_seq)
+        mask_to_ignore = np.logical_or(mask_to_ignore, mask_to_ignore_seq)  # numpy casts tensor to numpy array
+        mask_to_ignore = torch.tensor(mask_to_ignore, dtype=torch.bool)
 
     return mask_to_ignore
 
@@ -199,23 +204,6 @@ def calc_distance_matrix(embeddings: Tensor, is_query: Tensor, is_gallery: Tenso
     distance_matrix = pairwise_dist(x1=query_embeddings, x2=gallery_embeddings, p=2)
 
     return distance_matrix
-
-
-def calculate_accuracy_on_triplets(embeddings: Tensor, reduce_mean: bool = True) -> Tensor:
-    assert embeddings.ndim == 2
-    assert embeddings.shape[0] % 3 == 0
-
-    anchor_ii, positive_ii, negative_ii = get_tri_ids_in_plain(n=len(embeddings))
-
-    pos_dists = elementwise_dist(x1=embeddings[anchor_ii], x2=embeddings[positive_ii])
-    neg_dists = elementwise_dist(x1=embeddings[anchor_ii], x2=embeddings[negative_ii])
-
-    acc = (pos_dists < neg_dists).float()
-
-    if reduce_mean:
-        return acc.mean()
-    else:
-        return acc
 
 
 def calc_cmc(gt_tops: Tensor, top_k: Tuple[int, ...]) -> List[Tensor]:
@@ -481,16 +469,29 @@ def calc_fnmr_at_fmr(pos_dist: Tensor, neg_dist: Tensor, fmr_vals: Tuple[float, 
     return fnmr_at_fmr
 
 
-def calc_pcf(embeddings: Tensor, pfc_variance: Tuple[float, ...]) -> List[Tensor]:
+def calc_fnmr_at_fmr_from_matrices(
+    distance_matrix: FloatTensor, mask_gt: BoolTensor, fmr_vals: Tuple[float, ...]
+) -> TMetricsDict:
+    metrics: TMetricsDict = dict()
+
+    if fmr_vals:
+        pos_dist, neg_dist = extract_pos_neg_dists(distance_matrix, mask_gt)
+        fnmr_at_fmr = calc_fnmr_at_fmr(pos_dist, neg_dist, fmr_vals)
+        metrics["fnmr@fmr"] = dict(zip(fmr_vals, fnmr_at_fmr))
+
+    return metrics
+
+
+def calc_pcf(embeddings: Tensor, pcf_variance: Tuple[float, ...]) -> List[Tensor]:
     """
     Function estimates the Principal Components Fraction (PCF) of embeddings using Principal Component Analysis.
     The metric is defined as a fraction of components needed to explain the required variance in data.
 
     Args:
         embeddings: Embeddings matrix with the shape of ``[n_embeddings, embeddings_dim]``.
-        pfc_variance: Values in range [0, 1]. Find the number of components such that the amount
+        pcf_variance: Values in range [0, 1]. Find the number of components such that the amount
                       of variance that needs to be explained is greater than the fraction specified
-                      by ``pfc_variance``.
+                      by ``pcf_variance``.
     Returns:
         List of linear dimensions as a fractions of the embeddings dimension.
 
@@ -524,48 +525,40 @@ def calc_pcf(embeddings: Tensor, pfc_variance: Tuple[float, ...]) -> List[Tensor
         because the number of principal axes is superior to the desired explained variance threshold).
 
         >>> embeddings = torch.eye(4, 10, dtype=torch.float)
-        >>> calc_pcf(embeddings, pfc_variance=(0.5, 1))
+        >>> calc_pcf(embeddings, pcf_variance=(0.5, 1))
         tensor([0.2000, 0.5000])
 
     """
     # The code below mirrors code from scikit-learn repository:
     # https://github.com/scikit-learn/scikit-learn/blob/f3f51f9b6/sklearn/decomposition/_pca.py#L491
-    _check_if_in_range(pfc_variance, 0, 1, "pfc_variance")
+    _check_if_in_range(pcf_variance, 0, 1, "pcf_variance")
     try:
         pca = PCA(embeddings)
-        n_components = pca.calc_principal_axes_number(pfc_variance).to(embeddings)
+        n_components = pca.calc_principal_axes_number(pcf_variance).to(embeddings)
         metric = n_components / embeddings.shape[1]
     except Exception:
         # Mostly we handle the following error here:
         # >>> The algorithm failed to converge because the input matrix is ill-conditioned
         # >>> or has too many repeated singular values
-        metric = [torch.tensor(float("nan"))] * len(pfc_variance)
+        metric = [torch.tensor(float("nan"))] * len(pcf_variance)
 
     return metric
 
 
-def extract_pos_neg_dists(
-    distances: Tensor, mask_gt: Tensor, mask_to_ignore: Optional[Tensor]
-) -> Tuple[Tensor, Tensor]:
+def extract_pos_neg_dists(distances: Tensor, mask_gt: Tensor) -> Tuple[Tensor, Tensor]:
     """
     Extract distances between relevant samples, and distances between non-relevant samples.
 
     Args:
         distances: Distance matrix with the shape of ``[query_size, gallery_size]``
         mask_gt: ``(i,j)`` element indicates if for i-th query j-th gallery is the correct prediction
-        mask_to_ignore: Binary matrix to indicate that some elements in gallery cannot be used
-                     as answers and must be ignored
+
     Returns:
         pos_dist: Tensor of distances between relevant samples
         neg_dist: Tensor of distances between non-relevant samples
     """
-    if mask_to_ignore is not None:
-        mask_to_not_ignore = ~mask_to_ignore
-        pos_dist = distances[mask_gt & mask_to_not_ignore]
-        neg_dist = distances[~mask_gt & mask_to_not_ignore]
-    else:
-        pos_dist = distances[mask_gt]
-        neg_dist = distances[~mask_gt]
+    pos_dist = distances[mask_gt]
+    neg_dist = distances[~mask_gt]
     return pos_dist, neg_dist
 
 
@@ -607,11 +600,12 @@ def _check_if_in_range(vals: Sequence[float], min_: float, max_: float, name: st
 __all__ = [
     "TMetricsDict",
     "calc_retrieval_metrics",
+    "calc_retrieval_metrics_on_full",
     "calc_topological_metrics",
     "apply_mask_to_ignore",
     "calc_gt_mask",
     "calc_mask_to_ignore",
     "calc_distance_matrix",
-    "calculate_accuracy_on_triplets",
     "reduce_metrics",
+    "take_unreduced_metrics_by_mask",
 ]

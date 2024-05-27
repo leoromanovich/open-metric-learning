@@ -1,3 +1,4 @@
+import sys
 import tempfile
 from functools import partial
 from typing import Any, Dict, List
@@ -11,30 +12,16 @@ from torch.utils.data import DataLoader, Dataset
 
 from oml.const import (
     EMBEDDINGS_KEY,
+    INDEX_KEY,
     INPUT_TENSORS_KEY,
     IS_GALLERY_KEY,
     IS_QUERY_KEY,
     LABELS_KEY,
 )
-from oml.datasets.triplet import TItem, tri_collate
 from oml.lightning.callbacks.metric import MetricValCallback
-from oml.losses.triplet import TripletLossPlain, TripletLossWithMiner
+from oml.losses.triplet import TripletLossWithMiner
 from oml.metrics.embeddings import EmbeddingMetrics
-from oml.metrics.triplets import AccuracyOnTriplets
 from oml.samplers.balance import BalanceSampler
-
-
-class DummyTripletDataset(Dataset):
-    def __init__(self, num_triplets: int, im_size: int):
-        self.num_triplets = num_triplets
-        self.im_size = im_size
-
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        input_tensors = torch.rand((3, 3, self.im_size, self.im_size))
-        return {INPUT_TENSORS_KEY: input_tensors}
-
-    def __len__(self) -> int:
-        return self.num_triplets
 
 
 class DummyRetrievalDataset(Dataset):
@@ -42,10 +29,16 @@ class DummyRetrievalDataset(Dataset):
         self.labels = labels
         self.im_size = im_size
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, item: int) -> Dict[str, Any]:
         input_tensors = torch.rand((3, self.im_size, self.im_size))
-        label = torch.tensor(self.labels[idx]).long()
-        return {INPUT_TENSORS_KEY: input_tensors, LABELS_KEY: label, IS_QUERY_KEY: True, IS_GALLERY_KEY: True}
+        label = torch.tensor(self.labels[item]).long()
+        return {
+            INPUT_TENSORS_KEY: input_tensors,
+            LABELS_KEY: label,
+            IS_QUERY_KEY: True,
+            IS_GALLERY_KEY: True,
+            INDEX_KEY: item,
+        }
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -61,20 +54,9 @@ class DummyCommonModule(pl.LightningModule):
     def configure_optimizers(self) -> torch.optim.Optimizer:
         return Adam(self.model.parameters(), lr=1e-4)
 
-    def validation_step(self, batch: TItem, batch_idx: int, *_: Any) -> Dict[str, Any]:
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int, *_: Any) -> Dict[str, Any]:
         embeddings = self.model(batch[INPUT_TENSORS_KEY])
         return {**batch, **{EMBEDDINGS_KEY: embeddings.detach().cpu()}}
-
-
-class DummyTripletModule(DummyCommonModule):
-    def __init__(self, im_size: int):
-        super().__init__(im_size=im_size)
-        self.criterion = TripletLossPlain(margin=None)
-
-    def training_step(self, batch_multidataloader: List[TItem], batch_idx: int) -> torch.Tensor:
-        embeddings = torch.cat([self.model(batch[INPUT_TENSORS_KEY]) for batch in batch_multidataloader])
-        loss = self.criterion(embeddings)
-        return loss
 
 
 class DummyExtractorModule(DummyCommonModule):
@@ -82,19 +64,11 @@ class DummyExtractorModule(DummyCommonModule):
         super().__init__(im_size=im_size)
         self.criterion = TripletLossWithMiner(margin=None, need_logs=True)
 
-    def training_step(self, batch_multidataloader: List[TItem], batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch_multidataloader: List[Dict[str, Any]], batch_idx: int) -> torch.Tensor:
         embeddings = torch.cat([self.model(batch[INPUT_TENSORS_KEY]) for batch in batch_multidataloader])
         labels = torch.cat([batch[LABELS_KEY] for batch in batch_multidataloader])
         loss = self.criterion(embeddings, labels)
         return loss
-
-
-def create_triplet_dataloader(num_samples: int, im_size: int, num_workers: int) -> DataLoader:
-    dataset = DummyTripletDataset(num_triplets=num_samples, im_size=im_size)
-    dataloader = DataLoader(
-        dataset=dataset, batch_size=num_samples // 2, num_workers=num_workers, collate_fn=tri_collate
-    )
-    return dataloader
 
 
 def create_retrieval_dataloader(
@@ -115,12 +89,6 @@ def create_retrieval_dataloader(
     return train_retrieval_loader
 
 
-def create_triplet_callback(loader_idx: int, samples_in_getitem: int) -> MetricValCallback:
-    metric = AccuracyOnTriplets(embeddings_key=EMBEDDINGS_KEY)
-    metric_callback = MetricValCallback(metric=metric, loader_idx=loader_idx, samples_in_getitem=samples_in_getitem)
-    return metric_callback
-
-
 def create_retrieval_callback(loader_idx: int, samples_in_getitem: int) -> MetricValCallback:
     metric = EmbeddingMetrics(
         embeddings_key=EMBEDDINGS_KEY,
@@ -132,12 +100,10 @@ def create_retrieval_callback(loader_idx: int, samples_in_getitem: int) -> Metri
     return metric_callback
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="Does not run on macOS")
 @pytest.mark.parametrize(
     "samples_in_getitem, is_error_expected, pipeline",
     [
-        (1, True, "triplet"),
-        (3, False, "triplet"),
-        (5, True, "triplet"),
         (1, False, "retrieval"),
         (2, True, "retrieval"),
     ],
@@ -151,16 +117,9 @@ def test_lightning(
     n_labels = 2
     n_instances = 3
 
-    if pipeline == "triplet":
-        create_dataloader = create_triplet_dataloader
-        lightning_module = DummyTripletModule(im_size=im_size)
-        create_callback = create_triplet_callback
-    elif pipeline == "retrieval":
-        create_dataloader = partial(create_retrieval_dataloader, n_labels=n_labels, n_instances=n_instances)
-        lightning_module = DummyExtractorModule(im_size=im_size)
-        create_callback = create_retrieval_callback
-    else:
-        raise ValueError
+    create_dataloader = partial(create_retrieval_dataloader, n_labels=n_labels, n_instances=n_instances)
+    lightning_module = DummyExtractorModule(im_size=im_size)
+    create_callback = create_retrieval_callback
 
     train_dataloaders = [
         create_dataloader(num_samples=num_samples, im_size=im_size, num_workers=num_workers)

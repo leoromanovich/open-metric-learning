@@ -11,7 +11,7 @@ from torch import device as tdevice
 from torch.utils.data import DataLoader
 
 from oml.const import BBOXES_COLUMNS, EMBEDDINGS_KEY, TCfg
-from oml.datasets.base import DatasetQueryGallery, DatasetWithLabels
+from oml.datasets.base import ImageLabeledDataset, ImageQueryGalleryLabeledDataset
 from oml.inference.flat import inference_on_dataframe
 from oml.interfaces.models import IPairwiseModel
 from oml.lightning.callbacks.metric import MetricValCallback, MetricValCallbackDDP
@@ -21,9 +21,9 @@ from oml.lightning.modules.pairwise_postprocessing import (
 )
 from oml.lightning.pipelines.parser import (
     check_is_config_for_ddp,
-    initialize_logging,
     parse_ckpt_callback_from_config,
     parse_engine_params_from_config,
+    parse_logger_from_config,
     parse_sampler_from_config,
     parse_scheduler_from_config,
 )
@@ -35,12 +35,7 @@ from oml.registry.postprocessors import get_postprocessor_by_cfg
 from oml.registry.transforms import get_transforms_by_cfg
 from oml.retrieval.postprocessors.pairwise import PairwiseImagesPostprocessor
 from oml.transforms.images.torchvision import get_normalisation_resize_torch
-from oml.utils.misc import (
-    dictconfig_to_dict,
-    flatten_dict,
-    load_dotenv,
-    set_global_seed,
-)
+from oml.utils.misc import dictconfig_to_dict, flatten_dict, set_global_seed
 
 
 def get_hash_of_extraction_stage_cfg(cfg: TCfg) -> str:
@@ -86,13 +81,13 @@ def get_loaders_with_embeddings(cfg: TCfg) -> Tuple[DataLoader, DataLoader]:
         use_fp16=int(cfg.get("precision", 32)) == 16,
     )
 
-    train_dataset = DatasetWithLabels(
+    train_dataset = ImageLabeledDataset(
         df=df_train,
         transform=get_transforms_by_cfg(cfg["transforms_train"]),
         extra_data={EMBEDDINGS_KEY: emb_train},
     )
 
-    valid_dataset = DatasetQueryGallery(
+    valid_dataset = ImageQueryGalleryLabeledDataset(
         df=df_val,
         # we don't care about transforms, since the only goal of this dataset is to deliver embeddings
         transform=get_normalisation_resize_torch(im_size=8),
@@ -119,13 +114,13 @@ def postprocessor_training_pipeline(cfg: DictConfig) -> None:
     For more details look at ``pipelines/postprocessing/pairwise_postprocessing/README.md``
 
     """
-    load_dotenv()
-
     set_global_seed(cfg["seed"])
 
     cfg = dictconfig_to_dict(cfg)
     pprint(cfg)
-    logger = initialize_logging(cfg)
+
+    logger = parse_logger_from_config(cfg)
+    logger.log_pipeline_info(cfg)
 
     trainer_engine_params = parse_engine_params_from_config(cfg)
     is_ddp = check_is_config_for_ddp(trainer_engine_params)

@@ -31,11 +31,13 @@ from oml.functional.metrics import (
     TMetricsDict,
     apply_mask_to_ignore,
     calc_distance_matrix,
+    calc_fnmr_at_fmr_from_matrices,
     calc_gt_mask,
     calc_mask_to_ignore,
-    calc_retrieval_metrics,
+    calc_retrieval_metrics_on_full,
     calc_topological_metrics,
     reduce_metrics,
+    take_unreduced_metrics_by_mask,
 )
 from oml.interfaces.metrics import IMetricDDP, IMetricVisualisable
 from oml.interfaces.retrieval import IDistancesPostprocessor
@@ -76,7 +78,7 @@ class EmbeddingMetrics(IMetricVisualisable):
         precision_top_k: Tuple[int, ...] = (5,),
         map_top_k: Tuple[int, ...] = (5,),
         fmr_vals: Tuple[float, ...] = tuple(),
-        pfc_variance: Tuple[float, ...] = (0.5,),
+        pcf_variance: Tuple[float, ...] = (0.5,),
         categories_key: Optional[str] = None,
         sequence_key: Optional[str] = None,
         postprocessor: Optional[IDistancesPostprocessor] = None,
@@ -102,9 +104,9 @@ class EmbeddingMetrics(IMetricVisualisable):
                       and ``fnmr@fmr=0.4``.
                       Note, computing this metric requires additional memory overhead,
                       that is why it's turned off by default.
-            pfc_variance: Values in range [0, 1]. Find the number of components such that the amount
+            pcf_variance: Values in range [0, 1]. Find the number of components such that the amount
                           of variance that needs to be explained is greater than the percentage specified
-                          by ``pfc_variance``.
+                          by ``pcf_variance``.
             categories_key: Key to take the samples' categories from the batches (if you have ones)
             sequence_key: Key to take sequence ids from the batches (if you have ones)
             postprocessor: Postprocessor which applies some techniques like query reranking
@@ -124,7 +126,7 @@ class EmbeddingMetrics(IMetricVisualisable):
         self.precision_top_k = precision_top_k
         self.map_top_k = map_top_k
         self.fmr_vals = fmr_vals
-        self.pfc_variance = pfc_variance
+        self.pcf_variance = pcf_variance
 
         self.categories_key = categories_key
         self.sequence_key = sequence_key
@@ -161,8 +163,18 @@ class EmbeddingMetrics(IMetricVisualisable):
 
         self.acc.refresh(num_samples=num_samples)
 
-    def update_data(self, data_dict: Dict[str, Any]) -> None:  # type: ignore
-        self.acc.update_data(data_dict=data_dict)
+    def update_data(self, data_dict: Dict[str, Any], indices: Optional[List[int]] = None) -> None:  # type: ignore
+        """
+        Args:
+            data_dict: Batch of data containing records of the same size: ``bs``.
+            indices: Global indices of the elements in your records within the range of ``(0, dataset_size - 1)``.
+                     Indices are needed in DDP (because data is gathered shuffled, additionally you may also get
+                     some duplicates due to padding). In the single device regime it's may be useful if you accumulate
+                     data in shuffled order.
+
+        """
+        # todo 522: make indices non optional and add the test
+        self.acc.update_data(data_dict=data_dict, indices=indices)
 
     def _calc_matrices(self) -> None:
         embeddings = self.acc.storage[self.embeddings_key]
@@ -170,6 +182,10 @@ class EmbeddingMetrics(IMetricVisualisable):
         is_query = self.acc.storage[self.is_query_key]
         is_gallery = self.acc.storage[self.is_gallery_key]
         sequence_ids = self.acc.storage[self.sequence_key] if self.sequence_key is not None else None
+
+        if isinstance(sequence_ids, list):
+            # if sequence ids are strings we get list here
+            sequence_ids = np.array(sequence_ids)
 
         mask_to_ignore = calc_mask_to_ignore(is_query=is_query, is_gallery=is_gallery, sequence_ids=sequence_ids)
 
@@ -199,14 +215,12 @@ class EmbeddingMetrics(IMetricVisualisable):
             "cmc_top_k": self.cmc_top_k,
             "precision_top_k": self.precision_top_k,
             "map_top_k": self.map_top_k,
-            "fmr_vals": self.fmr_vals,
         }
-        args_topological_metrics = {"pfc_variance": self.pfc_variance}
 
         metrics: TMetricsDict_ByLabels = dict()
 
         # note, here we do micro averaging
-        metrics[self.overall_categories_key] = calc_retrieval_metrics(
+        metrics[self.overall_categories_key] = calc_retrieval_metrics_on_full(
             distances=self.distance_matrix,
             mask_gt=self.mask_gt,
             reduce=False,
@@ -215,7 +229,10 @@ class EmbeddingMetrics(IMetricVisualisable):
         )
 
         embeddings = self.acc.storage[self.embeddings_key]
-        metrics[self.overall_categories_key].update(calc_topological_metrics(embeddings, **args_topological_metrics))
+        metrics[self.overall_categories_key].update(calc_topological_metrics(embeddings, self.pcf_variance))
+        metrics[self.overall_categories_key].update(
+            calc_fnmr_at_fmr_from_matrices(self.distance_matrix, self.mask_gt, self.fmr_vals)
+        )
 
         if self.categories_key is not None:
             categories = np.array(self.acc.storage[self.categories_key])
@@ -223,18 +240,17 @@ class EmbeddingMetrics(IMetricVisualisable):
             query_categories = categories[is_query]
 
             for category in np.unique(query_categories):
-                mask = query_categories == category
+                mask_query_sz = query_categories == category
 
-                metrics[category] = calc_retrieval_metrics(
-                    distances=self.distance_matrix[mask],  # type: ignore
-                    mask_gt=self.mask_gt[mask],  # type: ignore
-                    reduce=False,
-                    mask_to_ignore=None,  # we already applied it
-                    **args_retrieval_metrics,  # type: ignore
+                metrics[category] = take_unreduced_metrics_by_mask(metrics[self.overall_categories_key], mask_query_sz)
+                metrics[category].update(
+                    calc_fnmr_at_fmr_from_matrices(
+                        self.distance_matrix[mask_query_sz], self.mask_gt[mask_query_sz], self.fmr_vals  # type: ignore
+                    )
                 )
 
-                mask = categories == category
-                metrics[category].update(calc_topological_metrics(embeddings[mask], **args_topological_metrics))
+                mask_dataset_sz = categories == category
+                metrics[category].update(calc_topological_metrics(embeddings[mask_dataset_sz], self.pcf_variance))
 
         self.metrics_unreduced = metrics  # type: ignore
         self.metrics = reduce_metrics(metrics)  # type: ignore
@@ -377,6 +393,10 @@ class EmbeddingMetrics(IMetricVisualisable):
 class EmbeddingMetricsDDP(EmbeddingMetrics, IMetricDDP):
     def sync(self) -> None:
         self.acc = self.acc.sync()
+
+    def update_data(self, data_dict: Dict[str, Any], indices: List[int]) -> None:  # type: ignore
+        # indices are obligatory in DDP
+        return super().update_data(data_dict, indices)
 
 
 __all__ = ["TMetricsDict_ByLabels", "EmbeddingMetrics", "EmbeddingMetricsDDP"]

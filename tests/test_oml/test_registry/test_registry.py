@@ -2,13 +2,14 @@
 from pathlib import Path
 from typing import Any, Dict
 
+import dotenv
 import pytest
 import yaml
 from omegaconf import OmegaConf
 from torch import nn
 from torch.optim import Optimizer
 
-from oml.const import CONFIGS_PATH, TCfg
+from oml.const import CONFIGS_PATH, DOTENV_PATH, TCfg
 from oml.registry.loggers import LOGGERS_REGISTRY, get_logger
 from oml.registry.losses import LOSSES_REGISTRY, get_criterion
 from oml.registry.miners import MINERS_REGISTRY, get_miner
@@ -33,7 +34,7 @@ from oml.registry.transforms import (
     get_transforms_for_pretrained,
     save_transforms_as_files,
 )
-from oml.utils.misc import dictconfig_to_dict, load_dotenv
+from oml.utils.misc import dictconfig_to_dict
 
 
 def get_sampler_kwargs_runtime() -> Any:
@@ -60,13 +61,11 @@ def get_opt() -> Optimizer:
         ("transforms", TRANSFORMS_REGISTRY, get_transforms, None),
         ("pairwise_model", PAIRWISE_MODELS_REGISTRY, get_pairwise_model, None),
         ("postprocessor", POSTPROCESSORS_REGISTRY, get_postprocessor, None),
-        # We marked these secret required tests as "long" to skip them on push requests from public
-        # forks to OML. Nevertheless, the tests will be executed if PR is merged with all the needed credentials.
-        pytest.param("logger", LOGGERS_REGISTRY, get_logger, None, marks=pytest.mark.long),
+        pytest.param("logger", LOGGERS_REGISTRY, get_logger, None, marks=pytest.mark.needs_optional_dependency),
     ],
 )
 def test_registry(folder_name, registry, factory_fun, runtime_args) -> None:
-    load_dotenv()  # we need to load tokens for cloud loggers (Neptune, W & B)
+    dotenv.load_dotenv(DOTENV_PATH)  # we need to load tokens for cloud loggers (Neptune, W & B)
 
     for obj_name in registry.keys():
         cfg = dictconfig_to_dict(OmegaConf.load(CONFIGS_PATH / folder_name / f"{obj_name}.yaml"))
@@ -141,9 +140,10 @@ def test_saving_transforms_as_files() -> None:
 
     """
     cfg = yaml.safe_load(cfg)
-    save_transforms_as_files(cfg)
+    names_files = save_transforms_as_files(cfg)
 
-    assert Path("transforms_train.yaml").exists()
-    assert not Path("transforms_val.yaml").exists()
+    assert len(names_files) == 1, "Check that we only saved train transforms as expected"
 
-    Path("transforms_train.yaml").unlink()
+    file = Path(names_files[0][1])
+    assert file.exists()
+    Path(file).unlink()

@@ -1,18 +1,22 @@
+import os
 import shutil
 import subprocess
 import warnings
 from pathlib import Path
 from typing import List, Tuple
 
+import dotenv
 import pytest
 import torch
 import yaml  # type: ignore
 
-from oml.const import PROJECT_ROOT
+from oml.const import DOTENV_PATH, PROJECT_ROOT
 
 warnings.filterwarnings("ignore")
 
 SCRIPTS_PATH = PROJECT_ROOT / "tests/test_runs/test_pipelines/"
+
+dotenv.load_dotenv(DOTENV_PATH)  # we need to load tokens for cloud loggers (Neptune, W & B)
 
 
 def accelerator_devices_pairs() -> List[Tuple[str, int]]:
@@ -45,7 +49,7 @@ def run(file: str, accelerator: str, devices: int, need_rm_logs: bool = True) ->
 @pytest.mark.parametrize("accelerator, devices", accelerator_devices_pairs())
 def test_train_and_validate(accelerator: str, devices: int) -> None:
     run("train.py", accelerator, devices, need_rm_logs=False)
-    # it takes checpoints from the train stage
+    # it takes checkpoints from the train stage
     run("validate.py", accelerator, devices, need_rm_logs=False)
 
     for file in ["train.py", "validate.py"]:
@@ -53,24 +57,30 @@ def test_train_and_validate(accelerator: str, devices: int) -> None:
 
 
 @pytest.mark.long
+@pytest.mark.needs_optional_dependency
+@pytest.mark.skipif(os.getenv("TEST_CLOUD_LOGGERS") != "yes", reason="To have more control.")
 @pytest.mark.parametrize("accelerator, devices", accelerator_devices_pairs())
 def test_train_with_bboxes(accelerator: str, devices: int) -> None:
     run("train_with_bboxes.py", accelerator, devices)
 
 
 @pytest.mark.long
+@pytest.mark.needs_optional_dependency
+@pytest.mark.skipif(os.getenv("TEST_CLOUD_LOGGERS") != "yes", reason="To have more control.")
 @pytest.mark.parametrize("accelerator, devices", accelerator_devices_pairs())
 def test_train_with_sequence(accelerator: str, devices: int) -> None:
     run("train_with_sequence.py", accelerator, devices)
 
 
 @pytest.mark.long
+@pytest.mark.needs_optional_dependency
 @pytest.mark.parametrize("accelerator, devices", accelerator_devices_pairs())
 def test_train_with_categories(accelerator: str, devices: int) -> None:
-    run("train_with_categories.py", accelerator, devices)
+    run("train_with_categories.py", accelerator, devices, need_rm_logs=True)
 
 
 @pytest.mark.long
+@pytest.mark.needs_optional_dependency
 @pytest.mark.parametrize("accelerator, devices", accelerator_devices_pairs())
 def test_train_arcface_with_categories(accelerator: str, devices: int) -> None:
     run("train_arcface_with_categories.py", accelerator, devices)

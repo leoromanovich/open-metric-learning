@@ -20,7 +20,9 @@ OML is a PyTorch-based framework to train and validate the models producing high
 <a href="https://www.newyorker.de/" target="_blank"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/d/d8/New_Yorker.svg/1280px-New_Yorker.svg.png" width="100"/></a>ㅤㅤ
 <a href="https://www.epoch8.co/" target="_blank"><img src="https://i.ibb.co/GdNVTyt/Screenshot-2023-07-04-at-11-19-24.png" width="100"/></a>ㅤㅤ
 <a href="https://www.meituan.com" target="_blank"><img src="https://upload.wikimedia.org/wikipedia/commons/6/61/Meituan_English_Logo.png" width="100"/></a>ㅤㅤ
-<a href="https://constructor.io/" target="_blank"><img src="https://rethink.industries/wp-content/uploads/2022/04/constructor.io-logo.png" width="100"/></a>
+<a href="https://constructor.io/" target="_blank"><img src="https://rethink.industries/wp-content/uploads/2022/04/constructor.io-logo.png" width="100"/></a>ㅤㅤ
+<a href="https://edgify.ai/" target="_blank"><img src="https://edgify.ai/wp-content/themes/edgifyai/dist/assets/logo.svg" width="100" height="30"/></a>ㅤㅤ
+<a href="https://inspector-cloud.ru/" target="_blank"><img src="https://thumb.tildacdn.com/tild6533-6433-4137-a266-613963373637/-/resize/540x/-/format/webp/photo.png" width="100" height="30"/></a>
 
 
 <a href="https://www.ox.ac.uk/" target="_blank"><img src="https://i.ibb.co/zhWL6tD/21-05-2019-16-08-10-6922268.png" width="120"/></a>ㅤㅤ
@@ -34,7 +36,6 @@ universities who have used OML in their theses.
 [[2]](https://github.com/nastygorodi/PROJECT-Deep_Metric_Learning)
 [[3]](https://github.com/nik-fedorov/term_paper_metric_learning)
 
-### **[NEW!] OML 2.0 supports Torch 2.0 and Lightning 2.0 [NEW!]**
 
 <div align="left">
 
@@ -234,21 +235,35 @@ in our *Models Zoo*. In this case, you don't even need to train it.
 </p>
 </details>
 
+<details>
+<summary>Can OML process texts, sounds and other modalities?</summary>
+<p>
+
+You can adapt OML to make it work not only with images.
+Just open one of the examples and replace `Dataset` remaining the rest of the pipeline the same or almost the same.
+There is several people who successfully used OML for texts in their real-world projects.
+
+Unfortunately, we don't have ready-to-use tutorials for this kind of usage at the moment.
+
+</p>
+</details>
+
 ## [Documentation](https://open-metric-learning.readthedocs.io/en/latest/index.html)
 
-Documentation is available via the [link](https://open-metric-learning.readthedocs.io/en/latest/index.html).
+* [**DOCUMENTATION**](https://open-metric-learning.readthedocs.io/en/latest/index.html)
+* **TUTORIAL TO START WITH:**
+[English](https://medium.com/@AlekseiShabanov/practical-metric-learning-b0410cda2201) |
+[Russian](https://habr.com/ru/company/ods/blog/695380/) |
+[Chinese](https://zhuanlan.zhihu.com/p/683102241)
 
-You can also read some extra materials related to OML:
-
-* Theory and practice of metric learning with the usage of OML.
-[Post in English on Medium](https://medium.com/@AlekseiShabanov/practical-metric-learning-b0410cda2201) |
-[Post in Russian on Habr](https://habr.com/ru/company/ods/blog/695380/) |
-[Post in Chinese on CSDN](https://blog.csdn.net/fermion0217/article/details/127932087), translated by Chia-Chen Chang.
-
+---
 * The
 [DEMO](https://dapladoc-oml-postprocessing-demo-srcappmain-pfh2g0.streamlit.app/)
 for our paper
 [STIR: Siamese Transformers for Image Retrieval Postprocessing](https://arxiv.org/abs/2304.13393)
+
+* Meet OpenMetricLearning (OML) on
+[Marktechpost](https://www.marktechpost.com/2023/12/26/meet-openmetriclearning-oml-a-pytorch-based-python-framework-to-train-and-validate-the-deep-learning-models-producing-high-quality-embeddings/)
 
 * The report for Berlin-based meetup: "Computer Vision in production". November, 2022.
 [Link](https://drive.google.com/drive/folders/1uHmLU8vMrMVMFodt36u0uXAgYjG_3D30?usp=share_link)
@@ -266,13 +281,6 @@ You can also pull the prepared image from DockerHub...
 ```shell
 docker pull omlteam/oml:gpu
 docker pull omlteam/oml:cpu
-```
-
-...or build one by your own
-
-```shell
-make docker_build RUNTIME=cpu
-make docker_build RUNTIME=gpu
 ```
 
 ## [Examples](https://open-metric-learning.readthedocs.io/en/latest/feature_extraction/python_examples.html#)
@@ -385,7 +393,13 @@ from oml.miners.inbatch_all_tri import AllTripletsMiner
 from oml.models import ViTExtractor
 from oml.samplers.balance import BalanceSampler
 from oml.utils.download_mock_dataset import download_mock_dataset
-from pytorch_lightning.loggers import NeptuneLogger, TensorBoardLogger, WandbLogger
+from oml.lightning.pipelines.logging import (
+    ClearMLPipelineLogger,
+    MLFlowPipelineLogger,
+    NeptunePipelineLogger,
+    TensorBoardPipelineLogger,
+    WandBPipelineLogger,
+)
 
 dataset_root = "mock_dataset/"
 df_train, df_val = download_mock_dataset(dataset_root)
@@ -406,15 +420,21 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=4)
 metric_callback = MetricValCallback(metric=EmbeddingMetrics(extra_keys=[train_dataset.paths_key,]), log_images=True)
 
 # 1) Logging with Tensorboard
-logger = TensorBoardLogger(".")
+logger = TensorBoardPipelineLogger(".")
 
 # 2) Logging with Neptune
-# logger = NeptuneLogger(api_key="", project="", log_model_checkpoints=False)
+# logger = NeptunePipelineLogger(api_key="", project="", log_model_checkpoints=False)
 
 # 3) Logging with Weights and Biases
 # import os
 # os.environ["WANDB_API_KEY"] = ""
-# logger = WandbLogger(project="test_project", log_model=False)
+# logger = WandBPipelineLogger(project="test_project", log_model=False)
+
+# 4) Logging with MLFlow locally
+# logger = MLFlowPipelineLogger(experiment_name="exp", tracking_uri="file:./ml-runs")
+
+# 5) Logging with ClearML
+# logger = ClearMLPipelineLogger(project_name="exp", task_name="test")
 
 # run
 pl_model = ExtractorModule(extractor, criterion, optimizer)
@@ -455,7 +475,7 @@ features_queries = inference_on_images(extractor, paths=queries, transform=trans
 features_galleries = inference_on_images(extractor, paths=galleries, transform=transform, **args)
 
 # Now we can explicitly build pairwise matrix of distances or save you RAM via using kNN
-use_knn = True
+use_knn = False
 top_k = 3
 
 if use_knn:
@@ -476,13 +496,9 @@ print(f"Top {top_k} items closest to queries are:\n {ii_closest}")
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1S2nK6KaReDm-RjjdojdId6CakhhSyvfA?usp=share_link)
 
-[**Schemas, explanations and tips**](https://github.com/OML-Team/open-metric-learning/tree/main/pipelines/features_extraction)
+[MORE EXAMPLES](https://open-metric-learning.readthedocs.io/en/latest/feature_extraction/python_examples.html)
 
-See [extra code snippets](https://open-metric-learning.readthedocs.io/en/latest/feature_extraction/python_examples.html), including:
-* Training + Validation with Lightning
-* Training + Validation with Lightning in DDP mode
-* Training with losses from PML
-* Training with losses from PML advanced (passing distance, reducer, miner)
+[**Illustrations, explanations and tips**](https://github.com/OML-Team/open-metric-learning/tree/main/pipelines/features_extraction#training)
 
 ## [Pipelines](https://github.com/OML-Team/open-metric-learning/tree/main/pipelines)
 
@@ -491,12 +507,12 @@ All you need is to prepare your dataset in a required format.
 
 See [Pipelines](https://github.com/OML-Team/open-metric-learning/blob/main/pipelines/) folder for more details:
 * Feature extractor [pipeline](https://github.com/OML-Team/open-metric-learning/tree/main/pipelines/features_extraction)
-* Retrieval postprocessor [pipeline](https://github.com/OML-Team/open-metric-learning/tree/main/pipelines/postprocessing) (re-ranking)
+* Retrieval re-ranking [pipeline](https://github.com/OML-Team/open-metric-learning/tree/main/pipelines/postprocessing)
 
 ## [Zoo](https://open-metric-learning.readthedocs.io/en/latest/feature_extraction/zoo.html)
 
-Below are the models trained with OML on 4 public datasets.
-All metrics below were obtained on the images with the sizes of **224 x 224**:
+Models, trained by us.
+The metrics below are for **224 x 224** images:
 
 |                      model                      | cmc1  |         dataset          |                                              weights                                              |                                                    experiment                                                     |
 |:-----------------------------------------------:|:-----:|:------------------------:|:-------------------------------------------------------------------------------------------------:|:-----------------------------------------------------------------------------------------------------------------:|
@@ -505,8 +521,9 @@ All metrics below were obtained on the images with the sizes of **224 x 224**:
 | `ViTExtractor.from_pretrained("vits16_cars")`   | 0.907 |         CARS 196         |   [link](https://drive.google.com/drive/folders/17a4_fg94dox2sfkXmw-KCtiLBlx-ut-1?usp=sharing)    |  [link](https://github.com/OML-Team/open-metric-learning/tree/main/pipelines/features_extraction/extractor_cars)  |
 |  `ViTExtractor.from_pretrained("vits16_cub")`   | 0.837 |       CUB 200 2011       |   [link](https://drive.google.com/drive/folders/1TPCN-eZFLqoq4JBgnIfliJoEK48x9ozb?usp=sharing)    |  [link](https://github.com/OML-Team/open-metric-learning/tree/main/pipelines/features_extraction/extractor_cub)   |
 
-We also provide an integration with the models pretrained by other researchers.
-All metrics below were obtained on the images with the sizes of **224 x 224**:
+Models, trained by other researchers.
+Note, that some metrics on particular benchmarks are so high because they were part of the training dataset (for example `unicom`).
+The metrics below are for 224 x 224 images:
 
 |                            model                             | Stanford Online Products | DeepFashion InShop | CUB 200 2011 | CARS 196 |
 |:------------------------------------------------------------:|:------------------------:|:------------------:|:------------:|:--------:|
@@ -524,12 +541,17 @@ All metrics below were obtained on the images with the sizes of **224 x 224**:
 |         `ViTExtractor.from_pretrained("vits8_dino")`         |          0.651           |       0.524        |    0.661     |  0.315   |
 |        `ViTExtractor.from_pretrained("vitb16_dino")`         |          0.658           |       0.514        |    0.541     |  0.288   |
 |         `ViTExtractor.from_pretrained("vitb8_dino")`         |          0.689           |       0.599        |    0.506     |  0.313   |
+|       `ViTExtractor.from_pretrained("vits14_dinov2")`        |          0.566           |       0.334        |    0.797     |  0.503   |
+|     `ViTExtractor.from_pretrained("vits14_reg_dinov2")`      |          0.566           |       0.332        |    0.795     |  0.740   |
+|       `ViTExtractor.from_pretrained("vitb14_dinov2")`        |          0.565           |       0.342        |    0.842     |  0.644   |
+|     `ViTExtractor.from_pretrained("vitb14_reg_dinov2")`      |          0.557           |       0.324        |    0.833     |  0.828   |
+|       `ViTExtractor.from_pretrained("vitl14_dinov2")`        |          0.576           |       0.352        |    0.844     |  0.692   |
+|     `ViTExtractor.from_pretrained("vitl14_reg_dinov2")`      |          0.571           |       0.340        |    0.840     |  0.871   |
 |    `ResnetExtractor.from_pretrained("resnet50_moco_v2")`     |          0.493           |       0.267        |    0.264     |  0.149   |
 | `ResnetExtractor.from_pretrained("resnet50_imagenet1k_v1")`  |          0.515           |       0.284        |    0.455     |  0.247   |
 
 **The metrics may be different from the ones reported by papers,
-because the version of train/val split and usage of bounding boxes may differ.
-Particularly, we used bounding boxes during the evaluation.*
+because the version of train/val split and usage of bounding boxes may differ.*
 
 ### How to use models from Zoo?
 
@@ -576,6 +598,7 @@ and others.
 I would like to thank people who continue working on this pipeline when it became a separe project:
 [Julia Shenshina](https://github.com/julia-shenshina),
 [Misha Kindulov](https://github.com/b0nce),
+[Aron Dik](https://github.com/dapladoc),
 [Aleksei Tarasov](https://github.com/DaloroAT) and
 [Verkhovtsev Leonid](https://github.com/leoromanovich).
 

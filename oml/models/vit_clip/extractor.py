@@ -9,6 +9,7 @@ from oml.models.utils import (
     filter_state_dict,
     patch_device_and_float,
     remove_criterion_in_state_dict,
+    remove_prefix_from_state_dict,
 )
 from oml.models.vit_clip.external.model import VisionTransformer
 from oml.utils.io import download_checkpoint
@@ -92,13 +93,6 @@ class ViTCLIPExtractor(IExtractor):
             "fname": "openai_vitl14_224.ckpt",
             "init_args": {"arch": "vitl14_224", "normalise_features": False},
         },
-        "openai_vitl14_336": {
-            "url": f"{_OPENAI_URL}/3035c92b350959924f9f00213499208652fc7ea050643e8b385c2dac08641f02/ViT-L-14-336px.pt",
-            "hash": "b311058cae50cb10fbfa2a44231c9473",
-            "is_jitted": True,
-            "fname": "openai_vitl14_336.ckpt",
-            "init_args": {"arch": "vitl14_336", "normalise_features": False},
-        },
         # checkpoints pretrained by SberbankAI
         "sber_vitb16_224": {
             "url": f"{_SBER_URL}/ruclip-vit-base-patch16-224/resolve/main/pytorch_model.bin",
@@ -142,6 +136,8 @@ class ViTCLIPExtractor(IExtractor):
         self.normalize = normalise_features
         self.visual = self.constructors[arch]()
 
+        self.input_size = int(arch.split("_")[-1])
+
         if weights is None:
             return
         if weights in self.pretrained_models:
@@ -155,15 +151,21 @@ class ViTCLIPExtractor(IExtractor):
             visual = torch.jit.load(Path(weights), map_location="cpu").visual
             patch_device_and_float(visual, device="cpu")
             state_dict = visual.state_dict()
+
         else:
             state_dict = torch.load(Path(weights), map_location="cpu")
             state_dict = state_dict.get("state_dict", state_dict)
             state_dict = remove_criterion_in_state_dict(state_dict)
             state_dict = take_visual_part_of_vit_clip(state_dict, needed_keys=self.visual.state_dict().keys())
+            state_dict = remove_prefix_from_state_dict(state_dict, trial_key="conv1.weight")
 
         self.visual.load_state_dict(state_dict=state_dict, strict=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        assert (x.shape[-2] == self.input_size) and (
+            x.shape[-1] == self.input_size
+        ), f"The model expects input images to be resized to {self.input_size}x{self.input_size}"
+
         res = self.visual.forward(x)
         if self.normalize:
             res = res / torch.linalg.norm(res, 2, dim=1, keepdim=True).detach()
@@ -176,8 +178,9 @@ class ViTCLIPExtractor(IExtractor):
 
 def take_visual_part_of_vit_clip(state_dict: TStateDict, needed_keys: Iterable[str]) -> TStateDict:
     for k in list(state_dict):
-        if k.startswith("visual."):
-            state_dict[k.lstrip("visual")[1:]] = state_dict.pop(k)
+        if "visual" in k:
+            new_key = k[k.find("visual") + len("visual") + 1 :]
+            state_dict[new_key] = state_dict.pop(k)
     state_dict = filter_state_dict(state_dict, needed_keys=needed_keys)
     return state_dict
 

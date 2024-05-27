@@ -1,7 +1,11 @@
 # Pipelines: features extraction
 
-If you are new to Pipelines idea, you can start with
-[general overview](https://open-metric-learning.readthedocs.io/en/latest/oml/pipelines_general.html).
+* [What are pipelines?](https://open-metric-learning.readthedocs.io/en/latest/oml/pipelines_general.html)
+* Introduction to metric learning:
+[English](https://medium.com/@AlekseiShabanov/practical-metric-learning-b0410cda2201) |
+[Russian](https://habr.com/ru/company/ods/blog/695380/) |
+[Chinese](https://blog.csdn.net/fermion0217/article/details/127932087)
+
 
 These particular pipelines allow you to train, validate and inference models that represent images as feature vectors.
 In this section we explain how the following pipelines work under the hood:
@@ -89,8 +93,10 @@ In feature extraction pipelines you can customize:
 |    `criterion`     |   `LOSSES_REGISTRY`   | [configs](https://github.com/OML-Team/open-metric-learning/tree/main/oml/configs/criterion)  | The signature is required: `forward(features, labels)`. For contrastive losses: mining is implemented inside the forward pass. For classification losses: a classification head is a part of criterion. See [available](https://open-metric-learning.readthedocs.io/en/latest/contents/losses.html). |
 |    `optimizer`     | `OPTIMIZERS_REGISTRY` | [configs](https://github.com/OML-Team/open-metric-learning/tree/main/oml/configs/optimizer)  |                                                                                                                                     A regular PyTorch optimizer.                                                                                                                                     |
 |    `scheduling`    | `SCHEDULERS_REGISTRY` | [configs](https://github.com/OML-Team/open-metric-learning/tree/main/oml/configs/scheduler)  |                                                         A regular PyTorch lr scheduler, structured in Lightning [format](https://github.com/OML-Team/open-metric-learning/blob/main/tests/test_runs/test_pipelines/configs/train.yaml#L51).                                                          |
+|      `logger`      |  `LOGGERS_REGISTRY`   |   [configs](https://github.com/OML-Team/open-metric-learning/tree/main/oml/configs/logger)   |                                                                                          Child of [IPipelineLogger](https://open-metric-learning.readthedocs.io/en/latest/contents/interfaces.html#ipipelinelogger)                                                                                  |
 
-*It can be imported via: `from oml.registry import X_REGISTRY`.
+
+*Use: `from oml.registry import X_REGISTRY`.
 
 ## Tips
 

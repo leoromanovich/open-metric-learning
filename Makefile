@@ -65,16 +65,19 @@ run_all_tests: download_mock_dataset wandb_login
 
 .PHONY: run_short_tests
 run_short_tests: download_mock_dataset
-	export PYTORCH_ENABLE_MPS_FALLBACK=1; pytest --disable-warnings -sv -m "not long" tests
+	export PYTORCH_ENABLE_MPS_FALLBACK=1; pytest --disable-warnings -sv -m "not long and not needs_optional_dependency" tests
 	pytest --disable-warnings --doctest-modules --doctest-continue-on-failure -sv oml
 
 .PHONY: test_converters
 test_converters:
 	clear
-	export PYTHONWARNINGS=ignore; python pipelines/datasets_converters/convert_cub.py     --dataset_root  data/CUB_200_2011
 	export PYTHONWARNINGS=ignore; python pipelines/datasets_converters/convert_sop.py     --dataset_root  data/Stanford_Online_Products
+	export PYTHONWARNINGS=ignore; python pipelines/datasets_converters/convert_cub.py     --dataset_root  data/CUB_200_2011
+	export PYTHONWARNINGS=ignore; python pipelines/datasets_converters/convert_cub.py     --dataset_root  data/CUB_200_2011 --no_bboxes
 	export PYTHONWARNINGS=ignore; python pipelines/datasets_converters/convert_cars.py    --dataset_root  data/CARS196
+	export PYTHONWARNINGS=ignore; python pipelines/datasets_converters/convert_cars.py    --dataset_root  data/CARS196 --no_bboxes
 	export PYTHONWARNINGS=ignore; python pipelines/datasets_converters/convert_inshop.py  --dataset_root  data/DeepFashion_InShop
+	export PYTHONWARNINGS=ignore; python pipelines/datasets_converters/convert_inshop.py  --dataset_root  data/DeepFashion_InShop --no_bboxes
 
 .PHONY: run_precommit
 run_precommit:
@@ -111,3 +114,11 @@ upload_to_pip: build_wheel
 .PHONY: pip_install_actual_oml
 pip_install_actual_oml:
 	pip install open-metric-learning==$(OML_VERSION)
+
+# ====================================== MISC =============================
+.PHONY: clean
+clean:
+	find . -type d -name "__pycache__" -exec rm -r {} +
+	find . -type f -name "*.log" -exec rm {} +
+	find . -type f -name "*.predictions.json" -exec rm {} +
+	rm -rf docs/build

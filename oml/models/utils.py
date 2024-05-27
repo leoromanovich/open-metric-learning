@@ -13,10 +13,18 @@ def remove_criterion_in_state_dict(state_dict: TStateDict) -> TStateDict:
 
 
 def find_prefix_in_state_dict(state_dict: TStateDict, trial_key: str) -> str:
-    k0 = [k for k in state_dict.keys() if trial_key in k][0]
+    keys_starting_with_trial_key = [k for k in state_dict.keys() if trial_key in k]
+    assert keys_starting_with_trial_key, (
+        f"There are no keys starting from {trial_key}.\n" f"The existing keys are: {list(state_dict.keys())}"
+    )
+
+    k0 = keys_starting_with_trial_key[0]
     prefix = k0[: k0.index(trial_key)]
 
-    assert all(k.startswith(prefix) for k in state_dict.keys())
+    keys_not_starting_with_prefix = list(filter(lambda x: not x.startswith(prefix), state_dict.keys()))
+    assert (
+        not keys_not_starting_with_prefix
+    ), f"There are keys not starting from the found prefix {prefix}: {keys_not_starting_with_prefix}"
 
     return prefix
 
